@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Interview Recorder with Video + TTS Questions</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 700px;
+            margin: 30px auto;
+            padding: 10px;
+            line-height: 1.5;
+        }
+        #question {
+            font-size: 1.25rem;
+            margin-bottom: 1rem;
+            min-height: 3rem;
+        }
+        #transcriptHistory {
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 4px;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-bottom: 1rem;
+            white-space: pre-wrap;
+        }
+        button {
+            font-size: 1rem;
+            padding: 10px 15px;
+            margin-right: 10px;
+        }
+        p {
+            margin: 0.25rem 0;
+        }
+        p strong {
+            display: inline-block;
+            width: 30px;
+        }
+        video {
+            display: block;
+            margin-bottom: 1rem;
+            width: 100%;
+            max-height: 300px;
+            background: black;
+        }
+    </style>
+</head>
+<body>
+<h1>Interview Verification</h1>
+<div id="question">Loading question...</div>
+
+<video id="videoPreview" autoplay muted></video>
+
+<button id="startBtn" disabled>Start Recording</button>
+<button id="stopBtn" disabled>Stop Recording</button>
+
+<h3>Transcript History:</h3>
+<div id="transcriptHistory"></div>
+
+<script>
+    const questions = [
+        { id: 1, text: "Move your hand across the screen, such that it overlaps your face"},
+        { id: 2, text: "What is your first name?" },
+        { id: 3, text: "What is your last name?" },
+        { id: 4, text: "What is your current geographic location? Try stating the state and then country" },
+        { id: 5, text: "Is this account related to you?" },
+        { id: 6, text: "What is the " }
+    ];
+
+    let currentQuestion = questions[0];
+    let mediaRecorder;
+    let recordedChunks = [];
+    let localStream;
+
+    const questionEl = document.getElementById('question');
+    const transcriptHistoryEl = document.getElementById('transcriptHistory');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const videoPreview = document.getElementById('videoPreview');
+
+    function speakQuestion(text) {
+        return new Promise((resolve) => {
+            if (!window.speechSynthesis) {
+                alert('Sorry, your browser does not support speech synthesis.');
+                resolve();
+                return;
+            }
+
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'en-US';
+            utterance.onend = () => resolve();
+            utterance.onerror = () => resolve();
+
+            window.speechSynthesis.speak(utterance);
+        });
+    }
+
+    async function displayQuestion(question) {
+        if (!question) {
+            questionEl.textContent = "Interview completed. Thank you!";
+            startBtn.disabled = true;
+            stopBtn.disabled = true;
+            if (localStream) {
+                localStream.getTracks().forEach(t => t.stop());
+                videoPreview.srcObject = null;
+            }
+            return;
+        }
+
+        questionEl.textContent = '';
+        startBtn.disabled = true;
+        stopBtn.disabled = true;
+
+        await speakQuestion(question.text);
+
+        questionEl.textContent = question.text;
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+    }
+
+    function getNextQuestion(transcript) {
+        if (transcript.toLowerCase().includes('developer')) {
+            return { id: 99, text: "Can you tell me about your coding skills?" };
+        }
+        const currentIndex = questions.findIndex(q => q.id === currentQuestion.id);
+        if (currentIndex + 1 < questions.length) {
+            return questions[currentIndex + 1];
+        }
+        return null;
+    }
+
+    async function transcribeAudio(blob) {
+        const formData = new FormData();
+        formData.append('file', blob, 'recording.webm');
+        formData.append('question', currentQuestion.text); // ✅ Add this line
+
+        try {
+            const response = await fetch('/transcribe', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+            if (data.error) {
+                return 'Transcription error: ' + data.error;
+            }
+            return data.text;
+        } catch (err) {
+            return 'Network error: ' + err.message;
+        }
+    }
+
+
+    async function startMedia() {
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            videoPreview.srcObject = localStream;
+        } catch (err) {
+            alert('Could not access camera and microphone: ' + err.message);
+        }
+    }
+
+    startBtn.addEventListener('click', () => {
+        if (!localStream) {
+            alert('No media stream available.');
+            return;
+        }
+
+        recordedChunks = [];
+        mediaRecorder = new MediaRecorder(localStream, { mimeType: 'video/webm; codecs=vp8,opus' });
+
+        mediaRecorder.ondataavailable = e => {
+            if (e.data.size > 0) recordedChunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = async () => {
+            const videoBlob = new Blob(recordedChunks, { type: 'video/webm' });
+
+            transcriptHistoryEl.innerHTML +=
+                `<p><strong>Q:</strong> ${currentQuestion.text}</p>` +
+                `<p><strong>A:</strong> <em>Transcribing...</em></p>`;
+            transcriptHistoryEl.scrollTop = transcriptHistoryEl.scrollHeight;
+
+            const paragraphs = transcriptHistoryEl.querySelectorAll('p');
+            const lastAnswerP = paragraphs[paragraphs.length - 1];
+
+            const transcript = await transcribeAudio(videoBlob);
+            lastAnswerP.innerHTML = `<strong>A:</strong> ${transcript || '[No transcription available]'}`;
+
+            currentQuestion = getNextQuestion(transcript);
+            setTimeout(() => displayQuestion(currentQuestion), 1500);
+        };
+
+        mediaRecorder.start();
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+    });
+
+    stopBtn.addEventListener('click', () => {
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+        }
+    });
+
+    // Start camera + mic on page load and begin interview
+    (async () => {
+        await startMedia();
+        await displayQuestion(currentQuestion);
+    })();
+</script>
+</body>
+</html>
